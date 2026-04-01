@@ -4,8 +4,10 @@
 using namespace mbed;
 
 // ── Hardware Config ──────────────────────────────
+// Initialise LCD pins (RS, EN, D4, D5, D6, D7)
 LiquidCrystal lcd(10, 11, 12, 13, 14, 15);
 
+// Hardware pins
 const int buttonPin = 6, buzzer = 19;
 const int redPin = 16, greenPin = 17, bluePin = 18;
 const int trigPin = 8, echoPin = 9;
@@ -13,8 +15,9 @@ const int trigPin = 8, echoPin = 9;
 // ── Flash Memory Logic ───────────────────────────
 struct SaveData { uint32_t magic; int highScore; int totalSessions; };
 SaveData gameData;
-const uint32_t MAGIC_ID = 0xDEADC0DE;
+const uint32_t MAGIC_ID = 0xDEADC0DE; // Validation key
 
+// Save gameData to the last page of flash memory
 void saveToFlash() {
   FlashIAP flash; flash.init();
   uint32_t addr = flash.get_flash_start() + flash.get_flash_size() - flash.get_page_size();
@@ -23,64 +26,59 @@ void saveToFlash() {
   flash.deinit();
 }
 
+// Load gameData from flash; init defaults if empty/corrupt
 void loadFromFlash() {
   FlashIAP flash; flash.init();
   uint32_t addr = flash.get_flash_start() + flash.get_flash_size() - flash.get_page_size();
   memcpy(&gameData, (void*)addr, sizeof(SaveData)); flash.deinit();
+  
+  // Check if data is valid
   if (gameData.magic != MAGIC_ID) {
     gameData.magic = MAGIC_ID; gameData.highScore = 0; gameData.totalSessions = 0; saveToFlash();
   }
 }
 
-// ── Audio ─────────────────────────────────────────
+// ── Audio & LED ──────────────────────────────────
+// Set RGB LED colour (0-255)
 void setRGB(int r, int g, int b) {
   analogWrite(redPin, r); analogWrite(greenPin, g); analogWrite(bluePin, b);
 }
 
+// Generate a tone on the buzzer (bit-banged for Pico)
 void tonePico(int freq, int ms) {
-  int period = 1000000 / freq;
+  int period = 1000000 / freq; 
   for (long i = 0; i < ms * 1000L; i += period) {
     digitalWrite(buzzer, HIGH); delayMicroseconds(period / 2);
     digitalWrite(buzzer, LOW);  delayMicroseconds(period / 2);
   }
 }
 
-// Short soft tick — plays every time score goes up
-void soundScoreTick() {
-  tonePico(1200, 40);
-}
+// Scoring tick sound
+void soundScoreTick() { tonePico(1200, 40); }
 
-// Double beep — session started
-void soundStart() {
-  tonePico(880, 100); delay(50); tonePico(1318, 200);
-}
+// Session started sound
+void soundStart() { tonePico(880, 100); delay(50); tonePico(1318, 200); }
 
-// Descending two-tone — paused / left desk
-void soundPause() {
-  tonePico(400, 150); delay(50); tonePico(300, 250);
-}
+// Session paused sound
+void soundPause() { tonePico(400, 150); delay(50); tonePico(300, 250); }
 
-// Ascending two-tone — resumed
-void soundResume() {
-  tonePico(1000, 100); delay(50); tonePico(1200, 150);
-}
+// Session resumed sound
+void soundResume() { tonePico(1000, 100); delay(50); tonePico(1200, 150); }
 
-// Low long buzz — manually stopped early
-void soundStop() {
-  tonePico(200, 400);
-}
+// Session manually stopped sound
+void soundStop() { tonePico(200, 400); }
 
-// Rising 4-note fanfare — session complete
+// Success fanfare
 void soundVictory() {
   int melody[] = {523, 659, 784, 1047};
   for (int i = 0; i < 4; i++) {
-    if (i % 2 == 0) setRGB(255, 0, 255); else setRGB(0, 255, 255);
+    if (i % 2 == 0) setRGB(255, 0, 255); else setRGB(0, 255, 255); 
     tonePico(melody[i], 200);
     delay(50);
   }
 }
 
-// Extra flourish on top of victory — new high score
+// New high score fanfare
 void soundNewHigh() {
   soundVictory();
   delay(100);
@@ -90,36 +88,36 @@ void soundNewHigh() {
 }
 
 // ── LCD Helpers ──────────────────────────────────
+// Print right-aligned number with spaces
 void lcdPrintPadded(int val, int width) {
   char buf[8];
-  snprintf(buf, sizeof(buf), "%d", val);
+  snprintf(buf, sizeof(buf), "%d", val);  
   int len = strlen(buf);
-  for (int i = 0; i < width - len; i++) lcd.print(' ');
+  for (int i = 0; i < width - len; i++) lcd.print(' '); 
   lcd.print(buf);
 }
 
+// Print time in MM:SS format
 void lcdPrintTime(long seconds) {
   long m = seconds / 60;
   long s = seconds % 60;
-  if (m < 10) lcd.print('0');
+  if (m < 10) lcd.print('0'); 
   lcd.print(m);
   lcd.print(':');
-  if (s < 10) lcd.print('0');
+  if (s < 10) lcd.print('0'); 
   lcd.print(s);
 }
 
-// ── Main Logic Variables ─────────────────────────
+// ── Main Variables ───────────────────────────────
+// Rotating motivation messages (16 chars)
 const char* messages[] = {
-  "Focus Mode!     ",
-  "Keep Going!     ",
-  "Stay Sharp!     ",
-  "Doing Great!    ",
-  "Brain Power!    ",
-  "Don't Stop!     "
+  "Focus Mode!     ", "Keep Going!     ", "Stay Sharp!     ",
+  "Doing Great!    ", "Brain Power!    ", "Don't Stop!     "
 };
 
-bool running  = false;
-bool isPaused = false;
+bool running  = false;   // Is a session active?
+bool isPaused = false;   // Is the user away?
+
 int  studyMins = 1, currentMsg = 0;
 int  score = 0;
 int  pauseCount = 0;
@@ -130,14 +128,17 @@ unsigned long lastScoreTime = 0;
 unsigned long lastMsgTime   = 0;
 unsigned long pauseStart    = 0;
 
+// ── Sensor & Input ───────────────────────────────
+// Measure distance using ultrasonic sensor (in cm)
 int getDistance() {
   digitalWrite(trigPin, LOW);  delayMicroseconds(4);
   digitalWrite(trigPin, HIGH); delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
-  long dur = pulseIn(echoPin, HIGH, 20000);
+  long dur = pulseIn(echoPin, HIGH, 20000); 
   return (dur > 0) ? (dur * 0.034 / 2) : 999;
 }
 
+// Check if button pressed (with debounce)
 bool buttonPressed() {
   if (digitalRead(buttonPin) == LOW && (millis() - lastBtnTime > 300)) {
     lastBtnTime = millis(); return true;
@@ -151,7 +152,6 @@ bool buttonPressed() {
 // +10 perfect session bonus (zero pauses)
 // -2  per pause
 // Floor at 0
-
 int calcFinalScore(bool completed) {
   int s = score;
   if (completed) {
@@ -159,46 +159,47 @@ int calcFinalScore(bool completed) {
     if (pauseCount == 0) s += 10;
   }
   s -= pauseCount * 2;
-  return max(s, 0);
+  return max(s, 0); 
 }
 
-// ── Setup ─────────────────────────────────────────
+// ── Setup ────────────────────────────────────────
 void setup() {
-  pinMode(buttonPin, INPUT_PULLUP);
+  pinMode(buttonPin, INPUT_PULLUP); 
   pinMode(buzzer, OUTPUT);
   pinMode(redPin, OUTPUT); pinMode(greenPin, OUTPUT); pinMode(bluePin, OUTPUT);
-  pinMode(trigPin, OUTPUT); pinMode(echoPin, INPUT);
+  pinMode(trigPin, OUTPUT); pinMode(echoPin, INPUT); 
 
   loadFromFlash();
-  lcd.begin(16, 2);
 
+  lcd.begin(16, 2);
   lcd.setCursor(0, 0); lcd.print(" Pico  Study OS ");
   lcd.setCursor(0, 1); lcd.print("----------------");
-  setRGB(0, 0, 255);
+  setRGB(0, 0, 255); 
   delay(1500);
   lcd.clear();
 }
 
-// ── Loop ──────────────────────────────────────────
+// ── Loop ─────────────────────────────────────────
 void loop() {
   int distance = getDistance();
 
-  // ── IDLE ─────────────────────────────────────
+  // ── IDLE: No session, user away ────────────────
   if (!running && distance > 50) {
-    setRGB(10, 0, 40);
+    setRGB(10, 0, 40); 
     lcd.setCursor(0, 0); lcd.print("  Ready to go?  ");
     lcd.setCursor(0, 1);
     lcd.print("Hi:");
-    lcdPrintPadded(gameData.highScore, 4);
+    lcdPrintPadded(gameData.highScore, 4); 
     lcd.print(" Ses:");
     lcdPrintPadded(gameData.totalSessions, 3);
     return;
   }
 
-  // ── SETUP ────────────────────────────────────
+  // ── SETUP: No session, user at desk ────────────
   if (!running && distance <= 50) {
+    // Read pot on A0 to set time (1-60 mins)
     studyMins = constrain(map(analogRead(A0), 0, 1023, 1, 60), 1, 60);
-    setRGB(0, 80, 255);
+    setRGB(0, 80, 255); 
 
     lcd.setCursor(0, 0);
     lcd.print("Set time:");
@@ -208,87 +209,89 @@ void loop() {
     lcd.setCursor(0, 1);
     lcd.print(" [BTN] to start ");
 
+    // Start session
     if (buttonPressed()) {
-      endTime      = millis() + (studyMins * 60000UL);
-      running      = true;
-      score        = 0;
-      pauseCount   = 0;
-      isPaused     = false;
-      gameData.totalSessions++;
-      saveToFlash();
+      endTime      = millis() + (studyMins * 60000UL); 
+      running      = true;  
+      score        = 0;     
+      pauseCount   = 0;     
+      isPaused     = false; 
+      gameData.totalSessions++;  
+      saveToFlash();             
 
-      soundStart();
+      soundStart();              
       lcd.clear();
-      lastScoreTime = millis();
-      lastMsgTime   = millis();
+      lastScoreTime = millis(); 
+      lastMsgTime   = millis(); 
     }
-    return;
+    return; 
   }
 
-  // ── STUDYING ─────────────────────────────────
+  // ── ACTIVE SESSION ─────────────────────────────
   if (running) {
 
-    // User left the desk
+    // ── PAUSED: User left desk ───────────────────
     if (distance > 50) {
       if (!isPaused) {
         isPaused = true;
-        pauseStart = millis();
-        pauseCount++;
+        pauseStart = millis(); 
+        pauseCount++;          
 
-        soundPause();
-        setRGB(255, 40, 0);
+        soundPause();     
+        setRGB(255, 40, 0);  
         lcd.setCursor(0, 0); lcd.print("  !! PAUSED !!  ");
         lcd.setCursor(0, 1); lcd.print(" Return to desk ");
       }
-      return;
+      return; 
     }
 
-    // User returned
+    // ── RESUME: User returned ────────────────────
     if (isPaused) {
       isPaused = false;
-      unsigned long timeAway = millis() - pauseStart;
-      endTime += timeAway;
+      unsigned long timeAway = millis() - pauseStart; // Time spent away
+      endTime += timeAway; // Extend target end time
 
-      soundResume();
-      lcd.clear();
-      lastScoreTime = millis();
+      soundResume(); 
+      lcd.clear();   
+      lastScoreTime = millis(); // Reset tick timer
     }
 
-    setRGB(0, 255, 0);
-
+    // ── STUDYING: User at desk ───────────────────
+    setRGB(0, 255, 0); 
     long timeLeft = max(0L, (long)(endTime - millis()) / 1000);
 
-    // +1 point every 10 seconds — with a tick sound
+    // +1 score every 10 uninterrupted seconds
     if (millis() - lastScoreTime >= 10000) {
       score++;
       lastScoreTime = millis();
       soundScoreTick();
     }
 
-    // Rotate message every 6 seconds
+    // Rotate motivational message every 6s
     if (millis() - lastMsgTime > 6000) {
-      currentMsg = (currentMsg + 1) % 6;
+      currentMsg = (currentMsg + 1) % 6; 
       lastMsgTime = millis();
     }
 
-    // Row 0: motivational message (16 chars pre-padded)
+    // Top row: message
     lcd.setCursor(0, 0);
     lcd.print(messages[currentMsg]);
 
-    // Row 1: fixed 16-char buffer — e.g. "03:45  Pts:   12"
+    // Bottom row: timer + score
     char row1[32];
     snprintf(row1, sizeof(row1), "%02ld:%02ld  Pts:%5d",
              timeLeft / 60, timeLeft % 60, score);
     lcd.setCursor(0, 1);
     lcd.print(row1);
 
-    // ── SESSION COMPLETE ─────────────────────
+    // ── TIMER FINISHED ───────────────────────────
     if (timeLeft <= 0) {
-      running = false;
+      running = false; 
+
       int finalScore = calcFinalScore(true);
-      bool newHigh   = finalScore > gameData.highScore;
+      bool newHigh = finalScore > gameData.highScore;
       if (newHigh) gameData.highScore = finalScore;
-      saveToFlash();
+      saveToFlash(); 
 
       lcd.clear();
       if (newHigh) {
@@ -296,32 +299,36 @@ void loop() {
       } else {
         lcd.setCursor(0, 0); lcd.print("  GREAT WORK!   ");
       }
+      
       lcd.setCursor(0, 1);
       lcd.print("Score:");
       lcdPrintPadded(finalScore, 5);
+      // Mark perfect session with "+"
       lcd.print(pauseCount == 0 ? "+" : " ");
 
       if (newHigh) soundNewHigh(); else soundVictory();
 
-      delay(4000);
+      delay(4000); 
       lcd.clear();
-      return;
+      return;      
     }
 
-    // Manual stop
+    // ── MANUAL STOP ──────────────────────────────
     if (buttonPressed()) {
-      running = false;
-      int finalScore = calcFinalScore(false);
-      soundStop();
+      running = false; 
+      int finalScore = calcFinalScore(false); // Calculate without bonuses
+
+      soundStop(); 
       lcd.clear();
       lcd.setCursor(0, 0); lcd.print("  Session Done  ");
       lcd.setCursor(0, 1);
       lcd.print("Score:");
       lcdPrintPadded(finalScore, 5);
       lcd.print(" ");
-      delay(2000);
+
+      delay(2000); 
       lcd.clear();
-      return;
+      return;      
     }
   }
 }
