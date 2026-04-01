@@ -148,17 +148,17 @@ bool buttonPressed() {
 // ── Score System ─────────────────────────────────
 // +1  every 10 sec at desk
 // +10 per study minute on completion
-// +20 perfect session bonus (zero pauses)
-// -5  per pause
+// +10 perfect session bonus (zero pauses)
+// -2  per pause
 // Floor at 0
 
 int calcFinalScore(bool completed) {
   int s = score;
   if (completed) {
     s += studyMins * 10;
-    if (pauseCount == 0) s += 20;
+    if (pauseCount == 0) s += 10;
   }
-  s -= pauseCount * 5;
+  s -= pauseCount * 2;
   return max(s, 0);
 }
 
@@ -292,7 +292,7 @@ void loop() {
 
       lcd.clear();
       if (newHigh) {
-        lcd.setCursor(0, 0); lcd.print(" * NEW HIGH * ");
+        lcd.setCursor(0, 0); lcd.print(" ** NEW HIGH ** ");
       } else {
         lcd.setCursor(0, 0); lcd.print("  GREAT WORK!   ");
       }
@@ -305,6 +305,7 @@ void loop() {
 
       delay(4000);
       lcd.clear();
+      return;
     }
 
     // Manual stop
@@ -320,6 +321,7 @@ void loop() {
       lcd.print(" ");
       delay(2000);
       lcd.clear();
+      return;
     }
   }
 }
